@@ -292,8 +292,8 @@ public class ClientHandshaker extends Handshaker {
 	 * @throws GeneralSecurityException if the APPLICATION record cannot be created 
 	 */
 	private void receivedServerFinished(Finished message) throws HandshakeException, GeneralSecurityException {
-
-		message.verifyData(session.getMasterSecret(), false, handshakeHash);
+		String prfMacName = session.getCipherSuite().getPseudoRandomFunctionMacName();
+		message.verifyData(prfMacName, session.getMasterSecret(), false, handshakeHash);
 		state = HandshakeType.FINISHED.getCode();
 		sessionEstablished();
 		handshakeCompleted();
@@ -369,7 +369,7 @@ public class ClientHandshaker extends Handshaker {
 								message.getPeer()));
 			}
 		}
-		if (connectionIdLength != null) {
+		if (connectionIdGenerator != null) {
 			ConnectionIdExtension extension = serverHello.getConnectionIdExtension();
 			if (extension != null) {
 				ConnectionId connectionId = extension.getConnectionId();
@@ -380,6 +380,7 @@ public class ClientHandshaker extends Handshaker {
 		session.setReceiveCertificateType(serverHello.getServerCertificateType());
 		session.setSniSupported(serverHello.hasServerNameExtension());
 		session.setParameterAvailable();
+		initMessageDigest();
 	}
 
 	/**
@@ -501,17 +502,17 @@ public class ClientHandshaker extends Handshaker {
 			break;
 		case PSK:
 			PskUtil pskUtilPlain = new PskUtil(sniEnabled, session, pskStore);
-			LOGGER.debug("Using PSK identity: {}", pskUtilPlain.getPskIdentity());
-			session.setPeerIdentity(pskUtilPlain.getPskIdentity());
-			clientKeyExchange = new PSKClientKeyExchange(pskUtilPlain.getPskIdentity().getIdentity(), session.getPeer());
+			LOGGER.debug("Using PSK identity: {}", pskUtilPlain.getPskPrincipal());
+			session.setPeerIdentity(pskUtilPlain.getPskPrincipal());
+			clientKeyExchange = new PSKClientKeyExchange(pskUtilPlain.getPskPublicIdentity(), session.getPeer());
 			premasterSecret = generatePremasterSecretFromPSK(pskUtilPlain.getPreSharedKey(), null);
 			generateKeys(premasterSecret);
 			break;
 		case ECDHE_PSK:
 			PskUtil pskUtil = new PskUtil(sniEnabled, session, pskStore);
-			LOGGER.debug("Using PSK identity: {}", pskUtil.getPskIdentity());
-			session.setPeerIdentity(pskUtil.getPskIdentity());
-			clientKeyExchange = new EcdhPskClientKeyExchange(pskUtil.getPskIdentity().getIdentity(), ecdhe.getPublicKey(), session.getPeer());
+			LOGGER.debug("Using PSK identity: {}", pskUtil.getPskPrincipal());
+			session.setPeerIdentity(pskUtil.getPskPrincipal());
+			clientKeyExchange = new EcdhPskClientKeyExchange(pskUtil.getPskPublicIdentity(), ecdhe.getPublicKey(), session.getPeer());
 			byte[] otherSecret = ecdhe.getSecret(ephemeralServerPublicKey).getEncoded();
 			premasterSecret = generatePremasterSecretFromPSK(pskUtil.getPreSharedKey(), otherSecret);
 			generateKeys(premasterSecret);
@@ -595,7 +596,8 @@ public class ClientHandshaker extends Handshaker {
 		}
 
 		handshakeHash = md.digest();
-		Finished finished = new Finished(session.getMasterSecret(), isClient, handshakeHash, session.getPeer());
+		String prfMacName = session.getCipherSuite().getPseudoRandomFunctionMacName();
+		Finished finished = new Finished(prfMacName, session.getMasterSecret(), isClient, handshakeHash, session.getPeer());
 		wrapMessage(flight, finished);
 
 		// compute handshake hash with client's finished message also
@@ -619,7 +621,7 @@ public class ClientHandshaker extends Handshaker {
 					rawPublicKeyBytes = key.getEncoded();
 				}
 				if (LOGGER.isDebugEnabled()) {
-					LOGGER.debug("sending CERTIFICATE message with client RawPublicKey [{}] to server", ByteArrayUtils.toHexString(rawPublicKeyBytes));
+					LOGGER.debug("sending CERTIFICATE message with client RawPublicKey [{}] to server", StringUtil.byteArray2HexString(rawPublicKeyBytes));
 				}
 				clientCertificate = new CertificateMessage(rawPublicKeyBytes, session.getPeer());
 			} else if (CertificateType.X_509 == session.sendCertificateType()) {
@@ -720,9 +722,9 @@ public class ClientHandshaker extends Handshaker {
 	}
 
 	protected void addConnectionId(final ClientHello helloMessage) {
-		if (connectionIdLength != null) {
+		if (connectionIdGenerator != null) {
 			final ConnectionId connectionId;
-			if (connectionIdLength > 0) {
+			if (connectionIdGenerator.useConnectionId()) {
 				// use the already created unique cid
 				connectionId = getConnection().getConnectionId();
 			} else {

@@ -58,8 +58,8 @@ import org.eclipse.californium.elements.RawDataChannel;
 import org.eclipse.californium.scandium.config.DtlsConnectorConfig;
 import org.eclipse.californium.scandium.dtls.Connection;
 import org.eclipse.californium.scandium.dtls.DTLSSession;
+import org.eclipse.californium.scandium.dtls.DebugConnectionStore;
 import org.eclipse.californium.scandium.dtls.DtlsTestTools;
-import org.eclipse.californium.scandium.dtls.InMemoryConnectionStore;
 import org.eclipse.californium.scandium.dtls.InMemorySessionCache;
 import org.eclipse.californium.scandium.dtls.Record;
 import org.eclipse.californium.scandium.dtls.CertificateType;
@@ -83,7 +83,7 @@ public class ConnectorHelper {
 
 	DTLSConnector server;
 	InetSocketAddress serverEndpoint;
-	InMemoryConnectionStore serverConnectionStore;
+	DebugConnectionStore serverConnectionStore;
 	InMemorySessionCache serverSessionCache;
 	SimpleRawDataChannel serverRawDataChannel;
 	RawDataProcessor serverRawDataProcessor;
@@ -138,11 +138,6 @@ public class ConnectorHelper {
 		pskStore.setKey(SCOPED_CLIENT_IDENTITY, CLIENT_IDENTITY_SECRET.getBytes(), SERVERNAME);
 
 		builder.setAddress(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0))
-				.setSupportedCipherSuites(
-							CipherSuite.TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8,
-							CipherSuite.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256,
-							CipherSuite.TLS_PSK_WITH_AES_128_CCM_8,
-							CipherSuite.TLS_PSK_WITH_AES_128_CBC_SHA256)
 				.setIdentity(DtlsTestTools.getPrivateKey(), DtlsTestTools.getServerCertificateChain(), CertificateType.RAW_PUBLIC_KEY, CertificateType.X_509)
 				.setPskStore(pskStore)
 				.setMaxConnections(SERVER_CONNECTION_STORE_CAPACITY)
@@ -152,6 +147,12 @@ public class ConnectorHelper {
 				.setLoggingTag("server")
 				.setServerOnly(true);
 
+		if (builder.getIncompleteConfig().getSupportedCipherSuites() == null) {
+			CipherSuite.getEcdsaCipherSuites(true);
+			List<CipherSuite> list = new ArrayList<>(CipherSuite.getEcdsaCipherSuites(true));
+			list.addAll(CipherSuite.getPskCipherSuites(true, true));
+			builder.setSupportedCipherSuites(list);
+		}
 		if (!Boolean.FALSE.equals(builder.getIncompleteConfig().isClientAuthenticationRequired()) ||
 				Boolean.TRUE.equals(builder.getIncompleteConfig().isClientAuthenticationWanted())) {
 			builder.setTrustStore(DtlsTestTools.getTrustedCertificates()).setRpkTrustAll();
@@ -159,7 +160,7 @@ public class ConnectorHelper {
 		serverConfig = builder.build();
 
 		serverSessionCache = new InMemorySessionCache();
-		serverConnectionStore = new InMemoryConnectionStore(serverConfig.getConnectionIdLength(), SERVER_CONNECTION_STORE_CAPACITY, 5 * 60, serverSessionCache); // connection timeout 5mins
+		serverConnectionStore = new DebugConnectionStore(SERVER_CONNECTION_STORE_CAPACITY, 5 * 60, serverSessionCache); // connection timeout 5mins
 		serverConnectionStore.setTag("server");
 
 		server = new DTLSConnector(serverConfig, serverConnectionStore);

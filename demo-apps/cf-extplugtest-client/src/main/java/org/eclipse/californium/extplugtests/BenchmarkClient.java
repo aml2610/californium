@@ -58,10 +58,10 @@ import org.eclipse.californium.core.server.resources.ResourceObserver;
 import org.eclipse.californium.elements.util.DaemonThreadFactory;
 import org.eclipse.californium.elements.util.ExecutorsUtil;
 import org.eclipse.californium.elements.util.NamedThreadFactory;
+import org.eclipse.californium.elements.util.StringUtil;
 import org.eclipse.californium.extplugtests.resources.Feed;
 import org.eclipse.californium.plugtests.ClientInitializer;
 import org.eclipse.californium.plugtests.ClientInitializer.Arguments;
-import org.eclipse.californium.scandium.util.ByteArrayUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -149,6 +149,8 @@ public class BenchmarkClient {
 			config.setInt(Keys.MAX_MESSAGE_SIZE, DEFAULT_BLOCK_SIZE);
 			config.setInt(Keys.PREFERRED_BLOCK_SIZE, DEFAULT_BLOCK_SIZE);
 			config.setInt(Keys.MAX_ACTIVE_PEERS, 10);
+			config.setInt(Keys.DTLS_AUTO_RESUME_TIMEOUT, 0);
+			config.setInt(Keys.DTLS_CONNECTION_ID_LENGTH, 0); // support it, but don't use it
 			config.setInt(Keys.MAX_PEER_INACTIVITY_PERIOD, 60 * 60 * 24); // 24h
 			config.setInt(Keys.TCP_CONNECTION_IDLE_TIMEOUT, 60 * 60 * 12); // 12h
 			config.setInt(Keys.TCP_CONNECT_TIMEOUT, 30 * 1000); // 20s
@@ -334,7 +336,13 @@ public class BenchmarkClient {
 	private final AtomicBoolean stop = new AtomicBoolean();
 
 	private final FeedObserver feedObserver = new FeedObserver();
-	
+
+	private static Request prepareRequest(CoapClient client) {
+		Request post = Request.newPost();
+		post.setURI(client.getURI());
+		return post;
+	}
+
 	private class TestHandler implements CoapHandler {
 		
 		private final Request post;
@@ -391,8 +399,7 @@ public class BenchmarkClient {
 
 			if (0 < c) {
 				requestsCounter.incrementAndGet();
-				Request post = Request.newPost();
-				post.setURI(client.getURI());
+				Request post = prepareRequest(client);
 				post.addMessageObserver(retransmissionDetector);
 				client.advanced(new TestHandler(post), post);
 			} else {
@@ -459,8 +466,7 @@ public class BenchmarkClient {
 	 * @return {@code true} on success, {@code false} on failure.
 	 */
 	public boolean test() {
-		Request post = Request.newPost();
-		post.setURI(client.getURI());
+		Request post = prepareRequest(client);
 		try {
 			CoapResponse response = client.advanced(post);
 			if (response != null) {
@@ -499,8 +505,7 @@ public class BenchmarkClient {
 			if (requestsCounter.get() == 0) {
 				clientCounter.incrementAndGet();
 			}
-			final Request post = Request.newPost();
-			post.setURI(client.getURI());
+			Request post = prepareRequest(client);
 			post.addMessageObserver(retransmissionDetector);
 			client.advanced(new TestHandler(post), post);
 		} else {
@@ -654,7 +659,7 @@ public class BenchmarkClient {
 			Arguments connectionArgs = arguments;
 			if (secure) {
 				random.nextBytes(id);
-				String name = ClientInitializer.PSK_IDENTITY_PREFIX + ByteArrayUtils.toHex(id);
+				String name = ClientInitializer.PSK_IDENTITY_PREFIX + StringUtil.byteArray2Hex(id);
 				connectionArgs = arguments.create(name, null);
 			}
 			CoapEndpoint coapEndpoint = ClientInitializer.createEndpoint(config, connectionArgs, connectorExecutor);
@@ -797,7 +802,7 @@ public class BenchmarkClient {
 				formatPerSecond("reqs", overallSentRequests, requestNanos));
 		if (overallReverseResponses > 0) {
 			if (observe) {
-				statisticsLogger.info("{} notifies sent, {} expected, {} observe request{}", overallSentReverseResponses,
+				statisticsLogger.info("{} notifies sent, {} expected, {} observe request", overallSentReverseResponses,
 						overallReverseResponses, overallObservationRegistrationCounter.get());
 				statisticsLogger.info("{} notifies in {}ms{}", overallSentReverseResponses,
 						TimeUnit.NANOSECONDS.toMillis(reverseResponseNanos),

@@ -150,7 +150,7 @@ public class ServerHandshaker extends Handshaker {
 	/** Used to retrieve pre-shared-key from a given client identity */
 	protected final PskStore pskStore;
 
-	private String preSharedKeyIdentity;
+	private PskPublicInformation preSharedKeyIdentity;
 
 	// Constructors ///////////////////////////////////////////////////
 
@@ -204,7 +204,7 @@ public class ServerHandshaker extends Handshaker {
 
 	// Methods ////////////////////////////////////////////////////////
 
-	public String getPreSharedKeyIdentity() {
+	public PskPublicInformation getPreSharedKeyIdentity() {
 		return preSharedKeyIdentity;
 	}
 
@@ -307,7 +307,7 @@ public class ServerHandshaker extends Handshaker {
 				incrementNextReceiveSeq();
 			}
 			LOGGER.debug("Processed {} message with message sequence no [{}] from peer [{}]",
-					new Object[]{handshakeMsg.getMessageType(), handshakeMsg.getMessageSeq(), message.getPeer()});
+					handshakeMsg.getMessageType(), handshakeMsg.getMessageSeq(), message.getPeer());
 			break;
 
 		default:
@@ -419,7 +419,8 @@ public class ServerHandshaker extends Handshaker {
 
 		// Verify client's data
 		byte[] handshakeHash = md.digest();
-		message.verifyData(session.getMasterSecret(), true, handshakeHash);
+		String prfMacName = session.getCipherSuite().getPseudoRandomFunctionMacName();
+		message.verifyData(prfMacName, session.getMasterSecret(), true, handshakeHash);
 
 		/*
 		 * First, send ChangeCipherSpec
@@ -432,7 +433,7 @@ public class ServerHandshaker extends Handshaker {
 		 * Second, send Finished message
 		 */
 		handshakeHash = mdWithClientFinished.digest();
-		Finished finished = new Finished(session.getMasterSecret(), isClient, handshakeHash, session.getPeer());
+		Finished finished = new Finished(prfMacName, session.getMasterSecret(), isClient, handshakeHash, session.getPeer());
 		wrapMessage(flight, finished);
 
 		state = HandshakeType.FINISHED.getCode();
@@ -466,10 +467,6 @@ public class ServerHandshaker extends Handshaker {
 		flightNumber = (cookie != null && cookie.length > 0) ? 4 : 2;
 
 		DTLSFlight flight = new DTLSFlight(getSession(), flightNumber);
-
-		// update the handshake hash
-		md.update(clientHello.getRawMessage());
-		handshakeMessages = ByteArrayUtils.concatenate(handshakeMessages, clientHello.getRawMessage());
 
 		createServerHello(clientHello, flight);
 
@@ -521,6 +518,11 @@ public class ServerHandshaker extends Handshaker {
 		ServerHello serverHello = new ServerHello(serverVersion, serverRandom, sessionId,
 				session.getCipherSuite(), session.getCompressionMethod(), serverHelloExtensions, session.getPeer());
 		wrapMessage(flight, serverHello);
+
+		initMessageDigest();
+		// update the handshake hash
+		md.update(clientHello.getRawMessage());
+		handshakeMessages = ByteArrayUtils.concatenate(handshakeMessages, clientHello.getRawMessage());
 
 		// update the handshake hash
 		md.update(serverHello.toByteArray());
@@ -581,8 +583,8 @@ public class ServerHandshaker extends Handshaker {
 			
 			try {
 				ecdhe = new ECDHECryptography(negotiatedSupportedGroup.getEcParams());
-				serverKeyExchange = new EcdhPskServerKeyExchange(ecdhe, clientRandom, serverRandom,
-				negotiatedSupportedGroup.getId(), session.getPeer());
+				serverKeyExchange = new EcdhPskServerKeyExchange(PskPublicInformation.EMPTY, ecdhe, clientRandom, serverRandom,
+						negotiatedSupportedGroup.getId(), session.getPeer());
 				break;
 			} catch (GeneralSecurityException e) {
 				throw new HandshakeException(
@@ -651,10 +653,9 @@ public class ServerHandshaker extends Handshaker {
 		clientKeyExchange = message;
 
 		// use the client's PSK identity to look up the pre-shared key
-		String identity = message.getIdentity();
-		preSharedKeyIdentity = identity;
-		byte[] psk = pskStore.getKey(session.getServerNames(), identity);
-		return configurePskCredentials(identity, psk, null);
+		preSharedKeyIdentity = message.getIdentity();
+		byte[] psk = pskStore.getKey(session.getServerNames(), preSharedKeyIdentity);
+		return configurePskCredentials(preSharedKeyIdentity, psk, null);
 	}
 
 	private byte[] receivedClientKeyExchange(final EcdhPskClientKeyExchange message) throws HandshakeException {
@@ -662,11 +663,10 @@ public class ServerHandshaker extends Handshaker {
 		clientKeyExchange = message;
 
 		// use the client's PSK identity to look up the pre-shared key
-		String identity = message.getIdentity();
-		preSharedKeyIdentity = identity;
-		byte[] psk = pskStore.getKey(session.getServerNames(), identity);
+		preSharedKeyIdentity = message.getIdentity();
+		byte[] psk = pskStore.getKey(session.getServerNames(), preSharedKeyIdentity);
 		byte[] otherSecret = ecdhe.getSecret(message.getEncodedPoint()).getEncoded();
-		return configurePskCredentials(identity, psk, otherSecret);
+		return configurePskCredentials(preSharedKeyIdentity, psk, otherSecret);
 	}
 
 	/**
@@ -713,12 +713,12 @@ public class ServerHandshaker extends Handshaker {
 			}
 		}
 
-		if (connectionIdLength != null) {
+		if (connectionIdGenerator != null) {
 			ConnectionIdExtension connectionIdExtension = clientHello.getConnectionIdExtension();
 			if (connectionIdExtension != null) {
 				session.setWriteConnectionId(connectionIdExtension.getConnectionId());
 				final ConnectionId connectionId;
-				if (connectionIdLength > 0) {
+				if (connectionIdGenerator.useConnectionId()) {
 					// use the already created unique cid
 					connectionId = getConnection().getConnectionId();
 				} else {
@@ -947,7 +947,7 @@ public class ServerHandshaker extends Handshaker {
 		return Arrays.equals(clientRandom.getRandomBytes(), messageRandom.getRandomBytes());
 	}
 
-	private byte[] configurePskCredentials(String identity, byte[] psk, byte[] otherSecret) throws HandshakeException {
+	private byte[] configurePskCredentials(PskPublicInformation identity, byte[] psk, byte[] otherSecret) throws HandshakeException {
 		String virtualHost = session.getVirtualHost();
 		if (virtualHost == null) {
 			LOGGER.debug("client [{}] uses PSK identity [{}]", getPeerAddress(), identity);
@@ -962,9 +962,9 @@ public class ServerHandshaker extends Handshaker {
 					new AlertMessage(AlertLevel.FATAL, AlertDescription.UNKNOWN_PSK_IDENTITY, session.getPeer()));
 		} else {
 			if (sniEnabled) {
-				session.setPeerIdentity(new PreSharedKeyIdentity(virtualHost, identity));
+				session.setPeerIdentity(new PreSharedKeyIdentity(virtualHost, identity.getPublicInfoAsString()));
 			} else {
-				session.setPeerIdentity(new PreSharedKeyIdentity(identity));
+				session.setPeerIdentity(new PreSharedKeyIdentity(identity.getPublicInfoAsString()));
 			}
 			return generatePremasterSecretFromPSK(psk, otherSecret);
 		}

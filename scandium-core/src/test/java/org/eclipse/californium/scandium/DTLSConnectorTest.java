@@ -105,6 +105,7 @@ import org.eclipse.californium.scandium.dtls.InMemoryConnectionStore;
 import org.eclipse.californium.scandium.dtls.InMemorySessionCache;
 import org.eclipse.californium.scandium.dtls.PSKClientKeyExchange;
 import org.eclipse.californium.scandium.dtls.ProtocolVersion;
+import org.eclipse.californium.scandium.dtls.PskPublicInformation;
 import org.eclipse.californium.scandium.dtls.Record;
 import org.eclipse.californium.scandium.dtls.SessionId;
 import org.eclipse.californium.scandium.dtls.cipher.CipherSuite;
@@ -142,7 +143,7 @@ public class DTLSConnectorTest {
 
 	private static final int CLIENT_CONNECTION_STORE_CAPACITY = 5;
 	private static final int SERVER_CONNECTION_STORE_CAPACITY = 2;
-	private static final String CLIENT_IDENTITY = "Client_identity";
+	private static final PskPublicInformation CLIENT_IDENTITY = new PskPublicInformation("Client_identity");
 	private static final String CLIENT_IDENTITY_SECRET = "secretPSK";
 	private static final int MAX_TIME_TO_WAIT_SECS = 2;
 
@@ -172,13 +173,13 @@ public class DTLSConnectorTest {
 
 		serverRawDataProcessor = new MessageCapturingProcessor();
 		serverSessionCache = new InMemorySessionCache();
-		serverConnectionStore = new InMemoryConnectionStore(null, SERVER_CONNECTION_STORE_CAPACITY, 5 * 60, serverSessionCache); // connection timeout 5mins
+		serverConnectionStore = new InMemoryConnectionStore(SERVER_CONNECTION_STORE_CAPACITY, 5 * 60, serverSessionCache); // connection timeout 5mins
 		serverRawDataChannel = new SimpleRawDataChannel(serverRawDataProcessor);
 
 		InMemoryPskStore pskStore = new InMemoryPskStore() {
 
 			@Override
-			public byte[] getKey(String identity) {
+			public byte[] getKey(PskPublicInformation identity) {
 				if (pskStoreLatency != 0) {
 					try {
 						Thread.sleep(pskStoreLatency);
@@ -564,6 +565,8 @@ public class DTLSConnectorTest {
 
 		// WHEN starting a new handshake (epoch 0) reusing the same client IP
 		clientConfig = newStandardConfig(clientEndpoint);
+		clientConnectionStore = new InMemoryConnectionStore(CLIENT_CONNECTION_STORE_CAPACITY, 60);
+		clientConnectionStore.setTag("client");
 		client = new DTLSConnector(clientConfig, clientConnectionStore);
 
 		// THEN assert that the handshake succeeds and a session is established
@@ -928,34 +931,6 @@ public class DTLSConnectorTest {
 		assertFalse(latch.await(MAX_TIME_TO_WAIT_SECS, TimeUnit.SECONDS));
 		assertThat(alert.get(), is(nullValue()));
 	}
-	
-	@Test
-	public void testConnectorEstablishSessionWithEcdhPskCBCSuite() throws Exception {
-		clientConfig = new DtlsConnectorConfig.Builder()
-				.setAddress(clientEndpoint)
-				.setLoggingTag("client")
-				.setPskStore(new StaticPskStore(CLIENT_IDENTITY, CLIENT_IDENTITY_SECRET.getBytes()))
-				.setSupportedCipherSuites(CipherSuite.TLS_ECDHE_PSK_WITH_AES_128_CBC_SHA256)
-				.build();
-			client = new DTLSConnector(clientConfig, clientConnectionStore);
-			givenAnEstablishedSession();
-	}
-	
-	/**
-	 * Verifies that the connector can successfully establish a session using a CBC based cipher suite.
-	 */
-	@Test
-	public void testConnectorEstablishesSecureSessionUsingCbcBlockCipher() throws Exception {
-		clientConfig =  new DtlsConnectorConfig.Builder()
-			.setAddress(clientEndpoint)
-			.setLoggingTag("client")
-			.setSupportedCipherSuites(CipherSuite.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256)
-			.setIdentity(DtlsTestTools.getClientPrivateKey(), DtlsTestTools.getClientCertificateChain(), CertificateType.X_509)
-			.setTrustStore(DtlsTestTools.getTrustedCertificates())
-			.build();
-		client = new DTLSConnector(clientConfig, clientConnectionStore);
-		givenAnEstablishedSession();
-	}
 
 	/**
 	 * Verifies that the connector includes a <code>RawPublicKeyIdentity</code> representing
@@ -984,6 +959,8 @@ public class DTLSConnectorTest {
 			.setLoggingTag("client")
 			.setPskStore(new StaticPskStore(CLIENT_IDENTITY, CLIENT_IDENTITY_SECRET.getBytes()))
 			.build();
+		clientConnectionStore = new InMemoryConnectionStore(CLIENT_CONNECTION_STORE_CAPACITY, 60);
+		clientConnectionStore.setTag("client");
 		client = new DTLSConnector(clientConfig, clientConnectionStore);
 		givenAnEstablishedSession();
 
@@ -1005,6 +982,8 @@ public class DTLSConnectorTest {
 			.setIdentity(DtlsTestTools.getClientPrivateKey(), DtlsTestTools.getClientCertificateChain(), CertificateType.X_509)
 			.setTrustStore(DtlsTestTools.getTrustedCertificates())
 			.build();
+		clientConnectionStore = new InMemoryConnectionStore(CLIENT_CONNECTION_STORE_CAPACITY, 60);
+		clientConnectionStore.setTag("client");
 		client = new DTLSConnector(clientConfig, clientConnectionStore);
 		givenAnEstablishedSession();
 
